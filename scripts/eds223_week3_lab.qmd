@@ -1,0 +1,307 @@
+---
+title: "EDS 223 Week 3 Lab"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## Load packages
+
+```{r}
+library(sf)
+library(tmap)
+library(tidyverse)
+library(spData)
+```
+
+## Load data
+
+```{r}
+nz <- spData::nz
+nz_height <- spData::nz_height
+canterbury <- nz %>% 
+  filter(Name == "Canterbury")
+```
+
+#### Plot data
+
+```{r}
+tm_shape(nz) + 
+  tm_polygons() + 
+tm_shape(canterbury) + 
+  tm_fill(col = "darkgrey") + 
+tm_shape(nz_height) + 
+  tm_dots(col = "red")
+```
+
+## Spatial filtering
+
+```{r}
+#### simple bracket subsetting ####
+
+# use base R indexing to filter to keep nz_height obsvs. inside of Canterbury 
+c_height1 <- nz_height[canterbury, ] # [rows, columns]
+
+
+#### st_filter() ####
+
+# another way to keep nz_height observations in Canterbury 
+c_height2 <- nz_height %>% 
+  st_filter(y = canterbury, .predicate = st_intersects)
+
+
+#### creating logical vector based on st_intersects() ####
+
+# intersect nz_height with canterbury 
+nz_height_sgbp <- st_intersects(x = nz_height, y = canterbury)
+nz_height_sgbp
+# turn the binary list into a logical T/F
+nz_heights_logical <- lengths(nz_height_sgbp) > 0
+c_height3 <- nz_height[nz_heights_logical, ]
+
+
+
+
+
+# # find all of the highest points NOT in Canterbury
+# nz_height[canterbury, , op = st_disjoint]
+```
+
+```{r}
+# filter to all points w/in 1000 km of Canterbury 
+# all points are w/in 1000 km
+nz_height_logical <- st_is_within_distance(nz_height, canterbury, 
+                      dist = units::set_units(1000, "km"), 
+                      sparse = FALSE)
+
+c_height4 <- nz_height[nz_height_logical, ] # filter based on logical 
+```
+
+## Spatial joins 
+
+```{r}
+# specify join based on geometries x within y
+st_join(nz_height, nz, join = st_intersects) %>% 
+  select(id = t50_fid, elevation, region = Name) %>% 
+  group_by(region) %>% 
+  summarise(n_points = n()) %>% 
+  st_drop_geometry() # drop the geometry column to make a prettier table 
+```
+
+#### Distance based joins 
+
+```{r}
+cycle_hire <- spData::cycle_hire
+cycle_hire_osm <- spData::cycle_hire_osm
+
+
+tmap_mode("view") # initiate interactive map 
+
+tm_shape(cycle_hire) + 
+  tm_symbols(col = "red", alpha = 0.2) + 
+tm_shape(cycle_hire_osm) + 
+  tm_symbols(col = "blue", alpha = 0.2)
+```
+
+```{r}
+# join by a specified distance threshold
+cycle_hire_join <- st_join(cycle_hire, cycle_hire_osm, 
+                           st_is_within_distance, 
+                           dist = units::set_units(20, "m"))
+```
+
+```{r}
+# do a quick check to QC the join & diagnose the output 
+if(nrow(cycle_hire) == nrow(cycle_hire_join)){
+  print("join matches original data dimensions")
+} else {
+  warning("join does not match orginal data dimensions")
+  print(paste("cycle_hire has", nrow(cycle_hire), "rows"))
+  print(paste("cycle_hire_join has", nrow(cycle_hire_join), "rows"))
+}
+```
+
+## Geometry operations 
+
+#### Aggregating 
+
+```{r}
+us_states <- spData::us_states
+```
+
+```{r}
+# find the total population in each 4 US regions
+regions <- us_states %>% 
+  group_by(REGION) %>% 
+  summarise(population = sum(total_pop_15, 
+                             na.rm = TRUE))
+
+
+# see how this changes the geometry
+tmap_mode("plot")
+
+tm_shape(us_states) +
+  tm_polygons
+
+tm_shape(regions) + 
+  tm_polygons()
+```
+
+#### Unions
+
+```{r}
+# filter to states in the western US
+# return all rows that are West; identical to `dplyr` filter() function 
+us_west <- us_states[us_states$REGION == "West", ] 
+us_west_union <- st_union(us_west)
+
+tm_shape(us_west_union) + 
+  tm_polygons()
+
+texas <- us_states[us_states$NAME == "Texas", ]
+texas_union <- st_union(us_west_union, texas)
+
+tm_shape(texas_union) + 
+  tm_polygons()
+```
+
+#### Buffers
+
+```{r}
+seine <- spData::seine
+seine_buffer <- st_buffer(seine, dist = 50000) # 5km
+
+seine_union <- st_union(seine_buffer)
+
+tm_shape(seine_union) + 
+  tm_polygons() + 
+tm_shape(seine) + 
+  tm_lines() 
+```
+
+```{r}
+# create buffer around high points
+nz_height_buffer <- st_buffer(nz_height, dist = 1000000)
+
+# filter buffered points with those that intersect Canterbury
+# same as st_filter() w/ st_is_within_distance()
+c_height5 <- nz_height_buffer %>%
+  st_filter(y = canterbury, .predicate = st_intersects)
+
+# check to see if results match previous approach
+if(nrow(c_height4) == nrow(c_height5)){
+  print("results from buffer approach match st_is_within_distance() approach")
+} else{
+  warning("approaches giving different results")
+}
+```
+
+#### Clipping 
+
+**Reference for HW #3 when removing highways**
+
+```{r}
+x <- st_sfc(st_point(c(0, 1))) %>% 
+  st_buffer(., dist = 1) %>% 
+  st_as_sf()
+
+y <- st_sfc(st_point(c(1, 1))) %>% 
+  st_buffer(., dist = 1) %>% 
+  st_as_sf()
+
+intersection <- st_intersection(x, y)
+difference_x_y <- st_difference(x, y) # the part of x not in y 
+difference_y_x <- st_difference(y, x) # the part of y not in x
+sym_difference <- st_sym_difference(x, y) # both parts that are different 
+
+
+bbox <- st_union(x, y) 
+
+tm_shape(x, bbox = bbox) +
+  tm_borders(col = "red") + 
+tm_shape(y) + 
+  tm_borders(col = "blue") + 
+tm_shape(sym_difference) + 
+  tm_fill(col = "purple", alpha = 0.2)
+```
+
+```{r}
+# create random points
+bb <- bbox # create bounding box of x and y from above
+box <- st_as_sf(bb)
+p <- st_sample(x = box, size = 100) %>% # randomly sample the bounding box
+  st_as_sf()
+
+# find intersection of x and y
+x_and_y <- st_intersection(x, y)
+
+# filter points
+# first approach: bracket subsetting
+p_xy1 = p[x_and_y, ]
+
+# second approach: st_filter()
+p_xy2 <- p %>%
+  st_filter(., x_and_y)
+
+# third approach: st_intersection()
+p_xy3 = st_intersection(p, x_and_y)
+
+
+tm_shape(x, bbox = bbox) +
+  tm_borders(col = "red") + 
+tm_shape(y) + 
+  tm_borders(col = "blue") + 
+tm_shape(p_xy2) + 
+  tm_dots()
+```
+
+#### Centroids
+
+- Essentially, different ways to represent polygons as points 
+    - Centroid: center of mass; might not actually fall w/in a shape's surface
+    - Point on surface: restricted within the geometry of polygons
+
+```{r}
+# centroids
+nz_centroid <- st_centroid(nz)
+seine_centroid <- st_centroid(seine)
+
+
+# point on surface
+nz_pos <- st_point_on_surface(nz)
+seine_pos <- st_point_on_surface(seine)
+
+
+# plotting 
+tm_shape(nz) + 
+  tm_polygons() + 
+tm_shape(nz_centroid) + 
+  tm_symbols(col = "red", alpha = 0.5) + 
+tm_shape(nz_pos) + 
+  tm_symbols(col = "blue", alpha = 0.5)
+```
+
+#### Simplification 
+
+- When to use:
+    - Plotting large extents in a simplified version 
+
+```{r}
+seine_simple <- st_simplify(seine, dTolerance = 2000)  # 2000 m
+
+tm_shape(seine_simple) + 
+  tm_lines()
+```
+
+
+
+
+
+
+
+
+
+
+
+
